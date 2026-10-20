@@ -1,0 +1,20 @@
+[project]
+name = "incident-detector"
+version = "0.1.0"
+description = "Phase-1 batch detector for apartment-complex incidents (dog fouling, littering, unattended items)"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "rfdetr==1.11.2",        # Apache-2.0 detector (COCO weights)
+    "supervision==0.31.0",   # MIT: detections, zones, annotation
+    "trackers==2.6.1",       # Apache-2.0: ByteTrack
+    "opencv-python>=4.10",
+    "pyyaml>=6",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+triage = ["mlx-vlm==0.7.9"]  # local VLM second opinion on Apple Silicon
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::FutureWarning"]

@@ -1,0 +1,41 @@
+# Camera definitions for the batch pipeline.
+# Zone polygons use normalised coordinates: [x, y] with 0,0 = top-left and
+# 1,1 = bottom-right of the frame. Draw them over the lawn, the lobby floor,
+# the corridor, etc. Rules list which zones (by name or tag) they watch.
+
+defaults:
+  sample_fps: 5
+  model: medium
+
+cameras:
+  test-lawn-dogs:
+    # Public test footage: CC0 "Africanis Dogs Resting In Grass" (Wikimedia Commons).
+    source: samples/dogs-resting-grass.mp4
+    start_time: "2026-10-20T07:30:00+05:30"
+    zones:
+      - name: lawn
+        tags: [lawn, no_dog]
+        polygon: [[0, 0.25], [1, 0.25], [1, 1], [0, 1]]
+    rules:
+      dog_dwell: {zones: [lawn]}
+
+  test-dog-park:
+    # Public-domain DVIDS b-roll "Atago Dog Park Grand Opening" (Wikimedia Commons).
+    source: samples/dog-park.mp4
+    zones:
+      - name: common_area
+        tags: [lawn, common_area]
+        polygon: [[0, 0], [1, 0], [1, 1], [0, 1]]
+
+  test-walkway:
+    # Roboflow Supervision sample "people-walking".
+    source: samples/people-walking.mp4
+    zones:
+      - name: walkway
+        tags: [common_area]
+        polygon: [[0, 0.3], [1, 0.3], [1, 1], [0, 1]]
+    rules:
+      person_in_restricted_zone:
+        enabled: true
+        zones: [walkway]
+        min_seconds: 8
