@@ -87,3 +87,35 @@ def test_carried_bag_does_not_fire():
         x = 100 + i * 8
         frames.append(dets(("person", [x, 300, x + 120, 660], 1), ("handbag", [x + 80, 450, x + 130, 520], 2)))
     assert run(rule, frames) == []
+
+
+def _bin_frames(drop: bool):
+    """Grey floor, a bin at (600,400)-(640,480); a person visits 2-6 s."""
+    from incident_detector.rules import BinDumpingRule
+
+    rule = BinDumpingRule(cam())
+    bins = [([600, 400, 640, 480], 0.9)]
+    events = []
+    for i in range(FPS * 20):
+        t = i / FPS
+        frame = np.full((H, W, 3), 120, np.uint8)
+        frame[400:480, 600:640] = (0, 200, 220)  # the bin
+        items = []
+        if 2 <= t < 6:
+            items.append(("person", [660, 300, 720, 500], 1))
+            frame[300:500, 660:720] = 60
+        if drop and t >= 5:
+            frame[455:480, 645:670] = 240  # white bag at the bin's base
+        events += rule.update(t, dets(*items), {"frame": frame, "new_scene": i == 0, "bins": bins})
+    return events
+
+
+def test_bag_left_beside_bin_fires():
+    events = _bin_frames(drop=True)
+    assert len(events) == 1
+    assert events[0].rule == "bin_dumping"
+    assert 6 <= events[0].t_trigger <= 10
+
+
+def test_bin_visit_without_drop_is_quiet():
+    assert _bin_frames(drop=False) == []

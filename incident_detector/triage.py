@@ -20,6 +20,9 @@ QUESTIONS = {
                  "Answer YES, NO or UNSURE on the first line, then one short sentence of reasoning.",
     "unattended_item": "Look at the object inside the red box. Does it look like a bag or item left behind with nobody attending it? "
                        "Answer YES, NO or UNSURE on the first line, then one short sentence of reasoning.",
+    "bin_dumping": "The red box marks something new on the floor next to a rubbish bin. Is a bag, sack, box, "
+                   "clothing or other item left on the floor beside the bin instead of inside it? "
+                   "Answer YES, NO or UNSURE on the first line, then one short sentence of reasoning.",
     "restricted_zone": "Is there a person standing or walking in this area? "
                        "Answer YES, NO or UNSURE on the first line, then one short sentence of reasoning.",
 }
@@ -41,6 +44,8 @@ def context_crop(image_path: Path, bbox: list[float], out_path: Path, max_side: 
     scale = max_side / max(crop.shape[:2])
     if scale < 1:
         crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    elif max(crop.shape[:2]) < 448:  # tiny crops from low-res footage: enlarge
+        crop = cv2.resize(crop, None, fx=448 / max(crop.shape[:2]), fy=448 / max(crop.shape[:2]), interpolation=cv2.INTER_CUBIC)
     cv2.imwrite(str(out_path), crop)
     return out_path
 
@@ -58,7 +63,7 @@ class Triage:
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        question = QUESTIONS.get(use_case, QUESTIONS["littering"])
+        question = QUESTIONS.get(use_case, QUESTIONS["littering"])  # use_case may also be a rule name
         prompt = apply_chat_template(self.processor, self.config, question, num_images=1)
         result = generate(self.model, self.processor, prompt, [str(image_path)], max_tokens=60, verbose=False)
         text = (getattr(result, "text", result) or "").strip()
@@ -74,7 +79,8 @@ def triage_events(results: list[dict], out_root: Path, model_id: str = DEFAULT_M
     t = Triage(model_id)
     for e in events:
         kf = out_root / e["evidence"]["keyframes"][0]
-        crop = context_crop(kf, e["bbox"], kf.with_name(kf.stem + "_crop.jpg"))
-        e["triage"] = t.ask(crop, e["use_case"])
+        clean = kf.with_name(kf.stem + "_clean.jpg")
+        crop = context_crop(clean if clean.exists() else kf, e["bbox"], kf.with_name(kf.stem + "_crop.jpg"))
+        e["triage"] = t.ask(crop, e["rule"] if e["rule"] in QUESTIONS else e["use_case"])
         e["evidence"]["keyframes"].append(str(crop.relative_to(out_root)))
         print(f"  triage {e['camera_id']} {e['use_case']} @{e['video_offset_trigger']}s -> {e['triage']['verdict']}")

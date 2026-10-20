@@ -39,3 +39,9 @@ cameras:
         enabled: true
         zones: [walkway]
         min_seconds: 8
+
+  test-basement-bin:
+    # Phone recording of the complex's NVR screen (Balaji, 5 Sep 2026): two
+    # basement cameras; someone leaves a bag beside the yellow bin at ~08:24:20.
+    source: samples/whatsapp-2026-09-05.mp4
+    stabilize: true

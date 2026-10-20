@@ -19,6 +19,9 @@ DEFAULTS: dict = {
     "model": "medium",  # nano | small | medium | base | large
     "clip_pre_seconds": 8.0,
     "clip_post_seconds": 12.0,
+    # Align every frame to the start of its scene. Needed for handheld/phone
+    # recordings of an NVR screen; leave off for real fixed-camera exports.
+    "stabilize": False,
     "rules": {
         "dog_dwell": {
             "enabled": True,
@@ -42,6 +45,17 @@ DEFAULTS: dict = {
             "require_owner": True,  # a person must have been near it when it appeared
             "warmup_seconds": 3.0,  # objects already there at start are background
             "cooldown_seconds": 120.0,
+        },
+        "bin_dumping": {
+            "enabled": True,
+            "auto_find_bins": True,  # OWLv2 looks for bins at each scene start
+            "side_margin": 1.2,  # watch this many bin-widths either side
+            "floor_margin": 0.6,  # and this many bin-heights below
+            "settle_seconds": 2.0,  # wait after the person leaves the area
+            "diff_threshold": 30,  # grey-level change counted as "different"
+            "min_area_px": 40,
+            "min_area_fraction": 0.008,
+            "confirm_frames": 3,  # change must persist this many sampled frames
         },
         "person_in_restricted_zone": {
             "enabled": False,
@@ -99,7 +113,7 @@ WHOLE_FRAME = [[0, 0], [1, 0], [1, 1], [0, 1]]
 
 
 def _camera(cam_id: str, raw: dict, defaults: dict, base_dir: Path) -> CameraConfig:
-    settings = _deep_merge(defaults, {k: v for k, v in raw.items() if k in ("sample_fps", "model", "clip_pre_seconds", "clip_post_seconds", "rules")})
+    settings = _deep_merge(defaults, {k: v for k, v in raw.items() if k in ("sample_fps", "model", "clip_pre_seconds", "clip_post_seconds", "stabilize", "rules")})
     zones = [Zone(z["name"], z["polygon"], z.get("tags", [])) for z in raw.get("zones", [])]
     if not zones:
         zones = [Zone("whole_frame", WHOLE_FRAME, ["common_area"])]

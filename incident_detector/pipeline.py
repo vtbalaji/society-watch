@@ -19,6 +19,7 @@ from . import RULES_VERSION, __version__
 from .config import CameraConfig
 from .detector import Detector, class_name
 from .rules import DOG, PERSON, Candidate, build_rules, classes_needed
+from .scene import BinFinder, SceneTracker
 
 MERGE_SECONDS = 15.0
 
@@ -79,6 +80,11 @@ def _iso(cam: CameraConfig, offset: float) -> str | None:
     return (base + timedelta(seconds=offset)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _new_tracker(eff_fps: float) -> ByteTrackTracker:
+    return ByteTrackTracker(frame_rate=eff_fps, lost_track_buffer=int(eff_fps * 3),
+                            track_activation_threshold=0.4, high_conf_det_threshold=0.5)
+
+
 def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, annotate_video: bool = False,
                    max_seconds: float | None = None, progress: bool = True) -> dict:
     cap = cv2.VideoCapture(cam.source)
@@ -97,9 +103,15 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
     if key not in detector_cache:
         detector_cache[key] = Detector(s["model"], list(key[1]))
     det = detector_cache[key]
-    tracker = ByteTrackTracker(frame_rate=eff_fps, lost_track_buffer=int(eff_fps * 3),
-                               track_activation_threshold=0.4, high_conf_det_threshold=0.5)
+    tracker = _new_tracker(eff_fps)
     rules = build_rules(cam)
+    scenes = SceneTracker(stabilize=s["stabilize"])
+    find_bins = None
+    if s["rules"]["bin_dumping"].get("enabled") and s["rules"]["bin_dumping"].get("auto_find_bins"):
+        if "bins" not in detector_cache:
+            detector_cache["bins"] = BinFinder()
+        find_bins = detector_cache["bins"]
+    bins_found: list[dict] = []
 
     out_dir = out_root / cam.camera_id
     (out_dir / "clips").mkdir(parents=True, exist_ok=True)
@@ -124,6 +136,18 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
             t = idx / fps
             if max_seconds and t > max_seconds:
                 break
+            new_scene, _affine, frame = scenes.update(frame)
+            if new_scene and stats["sampled_frames"]:
+                # Camera switched (or alignment lost): start every rule afresh.
+                tracker, rules = _new_tracker(eff_fps), build_rules(cam)
+            ctx = {"frame": frame, "new_scene": new_scene, "bins": []}
+            if new_scene:
+                stats["scenes"] += 1
+                if find_bins is not None:
+                    ctx["bins"] = find_bins(frame)
+                    bins_found += [{"scene": scenes.scene_index, "t": round(t, 1), "box": [round(v) for v in b], "score": round(sc, 2)}
+                                   for b, sc in ctx["bins"]]
+            # Detection runs on the aligned frame, so boxes are in scene coordinates.
             dets = tracker.update(det(frame), timestamp=t)
             if dets.tracker_id is None:
                 dets.tracker_id = np.full(len(dets), -1)
@@ -135,8 +159,11 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
             for c in dets.class_id:
                 stats[f"det_{class_name(c)}"] += 1
             for rule in rules:
-                for c in rule.update(t, dets):
-                    cands.append((c, _annotate(frame, dets, cam, c.bbox)))
+                for c in rule.update(t, dets, ctx):
+                    clean = frame.copy()  # only the flagged box, for the VLM
+                    x1, y1, x2, y2 = map(int, c.bbox)
+                    cv2.rectangle(clean, (x1 - 4, y1 - 4), (x2 + 4, y2 + 4), (0, 0, 255), 2)
+                    cands.append((c, (_annotate(frame, dets, cam, c.bbox), clean)))
             if writer is not None:
                 writer.write(_annotate(frame, dets, cam))
             if progress and stats["sampled_frames"] % 50 == 0:
@@ -150,12 +177,13 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
     duration = idx / fps
 
     events = []
-    for c, img in _merge(cands):
+    for c, (img, clean) in _merge(cands):
         eid = str(uuid.uuid4())
         clip_start, clip_end = max(0.0, c.t_start - s["clip_pre_seconds"]), min(duration, c.t_trigger + s["clip_post_seconds"])
         clip = out_dir / "clips" / f"{c.use_case}_{c.t_trigger:07.1f}s_{eid[:8]}.mp4"
         kf = out_dir / "keyframes" / f"{clip.stem}.jpg"
         cv2.imwrite(str(kf), img)
+        cv2.imwrite(str(kf.with_name(kf.stem + "_clean.jpg")), clean)
         clip_ok = _cut_clip(cam.source, clip_start, clip_end, clip)
         events.append({
             "event_id": eid,
@@ -201,6 +229,9 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
             "realtime_factor": round(duration / elapsed, 2) if elapsed else None,
             "detector": det.name,
             "rules": [r.name for r in rules],
+            "scenes": stats["scenes"],
+            "stabilized": s["stabilize"],
+            "bins_found": bins_found,
         },
         "activity": {
             "seconds_with_person": round(stats["frames_with_person"] / eff_fps, 1),

@@ -32,6 +32,7 @@ def main() -> None:
         p.add_argument("--out", default="output")
         p.add_argument("--model", help="override detector size: nano|small|medium|base|large")
         p.add_argument("--max-seconds", type=float, help="stop after this much video (for quick tests)")
+        p.add_argument("--stabilize", action="store_true", help="align shaky footage (e.g. a phone filming the NVR screen)")
         p.add_argument("--annotate", action="store_true", help="also write an annotated video per camera")
         p.add_argument("--triage", action="store_true", help="ask a local VLM about each flagged keyframe")
         p.add_argument("--triage-model", default=None)
@@ -40,9 +41,11 @@ def main() -> None:
     cams = load_config(args.config) if args.cmd == "run" else [single_file_config(args.video, args.camera_id)]
     if args.cmd == "run" and args.camera:
         cams = [c for c in cams if c.camera_id in args.camera]
-    if args.model:
-        for c in cams:
+    for c in cams:
+        if args.model:
             c.settings["model"] = args.model
+        if args.stabilize:
+            c.settings["stabilize"] = True
 
     out_root = Path(args.out) / datetime.now().strftime("run-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
