@@ -5,7 +5,7 @@ import supervision as sv
 
 from incident_detector.config import single_file_config
 from incident_detector.detector import NAME_TO_ID
-from incident_detector.rules import DogDwellRule, ObjectLeftBehindRule
+from incident_detector.rules import DogFoulingRule, ObjectLeftBehindRule
 
 W, H, FPS = 1280, 720, 5
 
@@ -36,17 +36,39 @@ def run(rule, frames):
     return out
 
 
-def test_still_dog_fires_once():
-    rule = DogDwellRule(cam())
-    box = [500, 400, 600, 480]
-    events = run(rule, [dets(("dog", [box[0] + (i % 2) * 3, box[1], box[2] + (i % 2) * 3, box[3]], 1)) for i in range(FPS * 12)])
+def _dog_scene(owner_bends: bool):
+    """Dog squats at one spot for 5 s with its owner beside it, then both walk off."""
+    frames = []
+    for i in range(FPS * 20):
+        t = i / FPS
+        items = []
+        if t < 2:  # walking in
+            x = 300 + t * 100
+            items += [("dog", [x, 400, x + 100, 480], 1), ("person", [x + 120, 250, x + 180, 480], 2)]
+        elif t < 7:  # squatting; owner waits (and maybe bends)
+            items.append(("dog", [500 + (i % 2) * 3, 400, 600, 480], 1))
+            top = 380 if (owner_bends and 5 <= t < 6) else 250
+            items.append(("person", [620, top, 680, 480], 2))
+        elif t < 10:  # walking away
+            x = 500 + (t - 7) * 250
+            items += [("dog", [x, 400, x + 100, 480], 1), ("person", [x + 120, 250, x + 180, 480], 2)]
+        frames.append(dets(*items))
+    return run(DogFoulingRule(cam()), frames)
+
+
+def test_dog_fouling_not_cleaned_fires():
+    events = _dog_scene(owner_bends=False)
     assert len(events) == 1
-    assert events[0].use_case == "dog_fouling"
-    assert 4.5 <= events[0].t_trigger <= 5.5
+    assert events[0].use_case == "dog_fouling_not_cleaned"
+    assert "left_without_bending" in events[0].explanation_codes
+
+
+def test_owner_bending_down_counts_as_cleaned():
+    assert _dog_scene(owner_bends=True) == []
 
 
 def test_walking_dog_does_not_fire():
-    rule = DogDwellRule(cam())
+    rule = DogFoulingRule(cam())
     events = run(rule, [dets(("dog", [100 + i * 15, 400, 200 + i * 15, 480], 1)) for i in range(FPS * 10)])
     assert events == []
 

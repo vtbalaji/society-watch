@@ -3,8 +3,8 @@
 Rules are deliberately recall-oriented: they flag clips worth a human (or a
 VLM) looking at. None of them proves misconduct on its own.
 
-- dog_dwell: a dog stays nearly still inside a zone for N seconds
-  (sniffing / squatting, i.e. possible fouling).
+- dog_fouling: a dog stays on one spot (squatting) and then it and its owner
+  leave without anyone bending down to clean up.
 - object_left_behind: a small object appears near a person, stays put, and
   the person moves away (possible littering or an unattended item).
 - person_in_restricted_zone: a person stays inside a restricted zone.
@@ -42,6 +42,8 @@ class Candidate:
     entities: list[dict]
     explanation_codes: list[str]
     extra: dict = field(default_factory=dict)
+    moment_frame: np.ndarray | None = None  # extra keyframe, e.g. the dog mid-squat
+    moment_t: float | None = None
 
 
 def _bottom_center(xyxy: np.ndarray) -> tuple[float, float]:
@@ -81,58 +83,111 @@ def _person_near(obj_xyxy: np.ndarray, persons: np.ndarray, ratio: float) -> boo
     return False
 
 
-class DogDwellRule:
-    name = "dog_dwell"
+@dataclass
+class _DogSpot:
+    center: np.ndarray
+    diag: float
+    first_seen: float
+    last_seen: float
+    zone: str
+    hits: int = 1
+    conf_sum: float = 0.0
+    bbox: list | None = None
+    suspected: bool = False  # dog stayed long enough: possible fouling
+    squat_frame: np.ndarray | None = None
+    squat_t: float | None = None
+    min_height_ratio: float = 1.0  # lowest (height / standing height) of anyone near
+    people_last_near: float = -1e9
+    done: bool = False
+
+
+class DogFoulingRule:
+    """A dog stays on one spot (squatting), then the dog and the people with it
+    leave. If nobody near the spot bent down in between, flag it as fouling
+    that was not cleaned up.
+
+    Spots are remembered by location rather than tracker ID, because the
+    owner often stands between the dog and the camera and the ID switches.
+    """
+
+    name = "dog_fouling"
 
     def __init__(self, cam: CameraConfig):
         self.cfg = cam.rule(self.name)
         self.zones = cam.zones_for(self.name)
-        self.history: dict[int, deque] = {}
-        self.last_fired: dict[int, float] = {}
+        self.spots: list[_DogSpot] = []
+        self.person_height: dict[int, float] = {}  # tallest seen per person track
+        self.sample_fps = cam.settings["sample_fps"]
 
     def update(self, t: float, dets: sv.Detections, ctx: dict | None = None) -> list[Candidate]:
-        out = []
         cfg = self.cfg
-        window = cfg["min_seconds"]
-        seen = set()
-        for xyxy, cid, conf, tid in zip(dets.xyxy, dets.class_id, dets.confidence, dets.tracker_id):
-            if cid != DOG or tid is None or tid < 0 or conf < cfg["min_confidence"]:
-                continue
-            seen.add(tid)
+        dogs = [(xyxy, float(c)) for xyxy, cid, c in zip(dets.xyxy, dets.class_id, dets.confidence)
+                if cid == DOG and c >= cfg["min_confidence"]]
+        people = [(xyxy, int(tid) if tid is not None else -1) for xyxy, cid, tid in zip(dets.xyxy, dets.class_id, dets.tracker_id) if cid == PERSON]
+        for xyxy, tid in people:
+            if tid >= 0:
+                self.person_height[tid] = max(self.person_height.get(tid, 0.0), float(xyxy[3] - xyxy[1]))
+
+        frame_w = ctx["frame"].shape[1] if ctx and ctx.get("frame") is not None else None
+        for xyxy, conf in dogs:
+            if frame_w is not None and (xyxy[0] < 4 or xyxy[2] > frame_w - 4):
+                continue  # half out of view: position and posture are unreliable
             zone = _zone_of(_bottom_center(xyxy), self.zones)
-            h = self.history.setdefault(tid, deque())
             if zone is None:
-                h.clear()
                 continue
-            h.append((t, _center(xyxy), float(np.hypot(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])), float(conf), zone.name, xyxy.copy()))
-            while h and t - h[0][0] > window * 2:
-                h.popleft()
-            span = [s for s in h if t - s[0] <= window]
-            if not span or t - span[0][0] < window * 0.95:
+            c = np.array(_center(xyxy))
+            diag = float(np.hypot(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]))
+            spot = min((sp for sp in self.spots if not sp.done), key=lambda sp: np.linalg.norm(sp.center - c), default=None)
+            if spot is not None and np.linalg.norm(spot.center - c) <= cfg["spot_radius"] * spot.diag \
+                    and t - spot.last_seen <= cfg["max_gap_seconds"]:
+                spot.last_seen, spot.hits, spot.conf_sum = t, spot.hits + 1, spot.conf_sum + conf
+                spot.bbox = xyxy.tolist()
+            else:
+                self.spots.append(_DogSpot(c, diag, t, t, zone.name, 1, conf, xyxy.tolist()))
+
+        out = []
+        for sp in self.spots:
+            if sp.done:
                 continue
-            if any(s[4] != zone.name for s in span):
+            if not sp.suspected:
+                dwell = sp.last_seen - sp.first_seen
+                # Dogs walking past the same spot one after another add only a
+                # few sightings; a squatting dog is seen there most of the time.
+                if dwell >= cfg["min_seconds"] and sp.hits >= cfg["min_seen_ratio"] * dwell * self.sample_fps:
+                    sp.suspected = True
+                    if ctx and ctx.get("frame") is not None and sp.last_seen == t:
+                        sp.squat_frame, sp.squat_t = ctx["frame"].copy(), t
+                elif t - sp.last_seen > cfg["max_gap_seconds"]:
+                    sp.done = True  # dog just walked through
                 continue
-            pts = np.array([s[1] for s in span])
-            motion = float(np.max(np.linalg.norm(pts - pts.mean(axis=0), axis=1)) * 2)
-            diag = float(np.median([s[2] for s in span]))
-            ratio = motion / diag if diag else 1.0
-            if ratio > cfg["max_motion_ratio"]:
+            # Suspected fouling: watch the spot for someone bending to clean up.
+            for xyxy, tid in people:
+                bx, by = _bottom_center(xyxy)
+                if np.hypot(bx - sp.center[0], by - sp.center[1]) <= cfg["near_person_ratio"] * max(sp.diag, xyxy[3] - xyxy[1]):
+                    sp.people_last_near = t
+                    standing = self.person_height.get(tid, 0.0)
+                    if tid >= 0 and standing > 0:
+                        sp.min_height_ratio = min(sp.min_height_ratio, float(xyxy[3] - xyxy[1]) / standing)
+            dog_near = any(np.linalg.norm(np.array(_center(x)) - sp.center) <= 2 * sp.diag for x, _ in dogs)
+            left_at = max(sp.last_seen, sp.people_last_near)
+            if dog_near or t - left_at < cfg["leave_seconds"]:
                 continue
-            if t - self.last_fired.get(tid, -1e9) < cfg["cooldown_seconds"]:
+            sp.done = True
+            cleaned = sp.min_height_ratio < cfg["bend_height_ratio"]
+            if cleaned and not cfg["report_cleaned"]:
                 continue
-            self.last_fired[tid] = t
-            stillness = 1.0 - ratio / cfg["max_motion_ratio"]
-            score = round(0.5 * float(np.mean([s[3] for s in span])) + 0.5 * stillness, 3)
+            dwell = sp.last_seen - sp.first_seen
+            score = round(min(1.0, 0.4 * sp.conf_sum / sp.hits + 0.3 * min(1.0, dwell / (2 * cfg["min_seconds"])) + (0.0 if cleaned else 0.3)), 3)
             out.append(Candidate(
-                rule=self.name, use_case="dog_fouling", t_start=span[0][0], t_trigger=t,
-                zone=zone.name, score=score, bbox=xyxy.tolist(),
-                entities=[{"track_id": f"local-track-{tid}", "class": "dog"}],
-                explanation_codes=["dog_in_zone", "dog_stationary"],
-                extra={"dwell_seconds": round(t - span[0][0], 1), "motion_ratio": round(ratio, 3)},
+                rule=self.name, use_case="dog_fouling" if cleaned else "dog_fouling_not_cleaned",
+                t_start=sp.first_seen, t_trigger=t, zone=sp.zone, score=score, bbox=sp.bbox,
+                entities=[{"spot": [round(float(v)) for v in sp.center], "class": "dog"}],
+                explanation_codes=["dog_stayed_on_spot"] + (["person_bent_down"] if cleaned else ["left_without_bending"]),
+                extra={"dwell_seconds": round(dwell, 1), "lowest_person_height_ratio": round(sp.min_height_ratio, 2),
+                       "left_at": round(left_at, 1)},
+                moment_frame=sp.squat_frame, moment_t=sp.squat_t,
             ))
-        for tid in list(self.history):
-            if tid not in seen and self.history[tid] and t - self.history[tid][-1][0] > 3:
-                del self.history[tid]
+        self.spots = [sp for sp in self.spots if not sp.done or t - sp.last_seen < 30]
         return out
 
 
@@ -378,7 +433,7 @@ class BinDumpingRule:
         return out
 
 
-ALL_RULES = [DogDwellRule, ObjectLeftBehindRule, PersonInZoneRule, BinDumpingRule]
+ALL_RULES = [DogFoulingRule, ObjectLeftBehindRule, PersonInZoneRule, BinDumpingRule]
 
 
 def build_rules(cam: CameraConfig) -> list:

@@ -23,15 +23,18 @@ DEFAULTS: dict = {
     # recordings of an NVR screen; leave off for real fixed-camera exports.
     "stabilize": False,
     "rules": {
-        "dog_dwell": {
+        "dog_fouling": {
             "enabled": True,
             "zones": ["*"],  # zone names, or "*" for every zone
-            "min_seconds": 5.0,
-            # Max movement of the dog's centre over the dwell window, as a
-            # fraction of its own box diagonal. Sniffing/squatting stays low.
-            "max_motion_ratio": 0.6,
-            "min_confidence": 0.4,
-            "cooldown_seconds": 30.0,
+            "min_confidence": 0.3,
+            "min_seconds": 3.0,  # dog stays on one spot this long (squatting)
+            "spot_radius": 0.5,  # "same spot" = within this x the dog's box diagonal
+            "max_gap_seconds": 4.0,  # dog may be hidden behind its owner this long
+            "min_seen_ratio": 0.5,  # dog seen on the spot in at least this share of frames
+            "near_person_ratio": 1.5,  # people this close to the spot count as the owner
+            "leave_seconds": 2.0,  # dog and owner gone this long = they have left
+            "bend_height_ratio": 0.75,  # someone shrinking below this = bent down to clean
+            "report_cleaned": False,  # also log fouling that was cleaned up
         },
         "object_left_behind": {
             "enabled": True,

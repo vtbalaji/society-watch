@@ -184,6 +184,15 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
         kf = out_dir / "keyframes" / f"{clip.stem}.jpg"
         cv2.imwrite(str(kf), img)
         cv2.imwrite(str(kf.with_name(kf.stem + "_clean.jpg")), clean)
+        keyframes = [str(kf.relative_to(out_root))]
+        if c.moment_frame is not None:
+            moment = kf.with_name(kf.stem + "_moment.jpg")
+            img_m = c.moment_frame.copy()
+            x1, y1, x2, y2 = map(int, c.bbox)
+            cv2.rectangle(img_m, (x1 - 6, y1 - 6), (x2 + 6, y2 + 6), (0, 0, 255), 3)
+            cv2.putText(img_m, f"{c.moment_t:.1f}s", (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+            cv2.imwrite(str(moment), img_m)
+            keyframes.insert(0, str(moment.relative_to(out_root)))
         clip_ok = _cut_clip(cam.source, clip_start, clip_end, clip)
         events.append({
             "event_id": eid,
@@ -203,7 +212,7 @@ def process_camera(cam: CameraConfig, out_root: Path, detector_cache: dict, anno
             "evidence": {
                 "clip": str(clip.relative_to(out_root)) if clip_ok else None,
                 "clip_window": [round(clip_start, 2), round(clip_end, 2)],
-                "keyframes": [str(kf.relative_to(out_root))],
+                "keyframes": keyframes,
             },
             "entities": c.entities,
             "explanation_codes": c.explanation_codes,

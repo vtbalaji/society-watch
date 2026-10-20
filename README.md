@@ -19,7 +19,8 @@ Runs locally on an Apple Silicon Mac using only open-source parts:
 
 | Rule | Fires when | Use case |
 |---|---|---|
-| `dog_dwell` | A dog stays nearly still inside a watched zone (lawn) for 5 s | `dog_fouling` |
+| `dog_fouling` | A dog stays on one spot for 3 s (squatting), then it and its owner leave without anyone bending down | `dog_fouling_not_cleaned` |
+| `bin_dumping` | Bins are found automatically; after a person visits, something new is left at the bin's base | `littering` |
 | `object_left_behind` | A bottle/cup/bag appears next to a person, stays put 8 s, and nobody is near it for 8 s | `littering` or `unattended_item` |
 | `person_in_restricted_zone` | A person stays in a restricted zone for N s (off by default) | `restricted_zone` |
 

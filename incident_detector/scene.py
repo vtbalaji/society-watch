@@ -18,6 +18,8 @@ class SceneTracker:
         self.cut_threshold = cut_threshold
         self.max_aligned_diff = max_aligned_diff
         self.ref_gray = None
+        self.prev_thumb = None
+        self.prev_jump = 0.0
         self.prev_hist = None
         self.ref = None
         self.orb = cv2.ORB_create(1500) if stabilize else None
@@ -31,6 +33,17 @@ class SceneTracker:
         cv2.normalize(hist, hist)
         cut = self.prev_hist is not None and cv2.compareHist(self.prev_hist, hist, cv2.HISTCMP_CORREL) < self.cut_threshold
         self.prev_hist = hist
+        # Same colours, different view (e.g. close-up to wide shot of the same
+        # street): compare tiny thumbnails too.
+        thumb = cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA).astype(np.float32)
+        # Only a jump out of a steady picture counts, so pans and handheld shake
+        # (alignment deals with those) do not chop the video into scenes.
+        if self.prev_thumb is not None:
+            jump = float(np.mean(np.abs(thumb - self.prev_thumb)))
+            if not self.stabilize and jump > 20.0 and self.prev_jump < 6.0:
+                cut = True
+            self.prev_jump = jump
+        self.prev_thumb = thumb
         if not self.stabilize:
             if cut or self.ref is None:
                 self.ref = True
