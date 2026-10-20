@@ -1,5 +1,6 @@
-# Apartment incident detector (phase 1)
+# society-watch
 
+Apartment incident detector (phase 1).
 Batch pipeline that scans recorded camera footage for **candidate** rule-breaking
 in common areas and writes short evidence clips plus a per-camera summary.
 Everything it flags is a candidate for a person to review, not a confirmed incident.
